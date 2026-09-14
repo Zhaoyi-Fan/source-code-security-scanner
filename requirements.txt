@@ -1,1 +1,3 @@
-colorama
+# Optional terminal colours for direct single-file use.
+# `pip install .` has no required runtime dependency; `pip install .[color]` is equivalent.
+colorama>=0.4.6,<1

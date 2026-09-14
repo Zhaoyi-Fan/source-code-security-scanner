@@ -1,241 +1,302 @@
-# Source Code Security Scanner v2.1
+# Source Code Security Scanner
 
-A lightweight, dependency-light Python tool for **secure-code-review triage**. It walks a
-codebase, flags source patterns that may indicate vulnerabilities or embedded credentials, and
-emits text, JSON, or SARIF for a reviewer or CI pipeline.
+[![CI](https://github.com/Zhaoyi-Fan/source-code-security-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/Zhaoyi-Fan/source-code-security-scanner/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-The scanner is deliberately **regex-led** and remains a single Python file with no required
-runtime dependency. Two Python rules use the standard-library AST for syntax-sensitive checks. It
-is a fast first pass for authorized review, not a replacement for a SAST engine, general language
-parser, taint analysis, or human confirmation.
+An **offline, regex-led source-review triage tool** for quickly surfacing embedded credentials and
+potentially unsafe code before manual review. It is dependency-free by default, ships as one
+Python module, and produces safe text, JSON, or SARIF reports for local and CI workflows.
 
-## What changed in v2.1
+It is intentionally narrower than a full SAST engine: findings are review candidates, not proof
+of exploitability, and a clean scan is not proof that an application is secure.
 
-v2.1 is a correctness and safe-output release. It focuses on making the existing narrow scanner
-trustworthy before adding more rule categories:
+## 30-second demo
 
-- **Centralized secret sanitization:** every renderer receives sanitized finding fields. When a
-  credential candidate occurs, default text, JSON, and SARIF output protect that entire source line
-  so adjacent literals and language-specific escapes cannot leak a suffix. This also protects
-  non-credential findings on the same line. `--no-redact` is an explicit unsafe override.
-- **Stable rule IDs and exact findings:** each conceptual rule has a stable rule ID. Findings are
-  de-duplicated by rule ID and match span, so one match cannot hide a second finding on the same
-  line. The same IDs appear in reports and scoped suppressions.
-- **Severity is separate from confidence:** a rule's severity describes potential impact. Secret
-  entropy can change detection confidence or filter a hit through `--min-entropy`, but it does not
-  downgrade severity and accidentally bypass a severity gate.
-- **Strict scan failures:** an unreadable target, traversal/read failure, or report-write failure is
-  a scan error (exit `2`), never a clean scan. Recursive scans stay within the requested root.
-- **Scoped Python suppressions:** `nosec` is recognized only where Python's tokenizer confirms a
-  real comment, and it must name a rule ID, for example
-  `# nosec: CREDENTIALS.PASSWORD`. Other languages fail closed and do not enable inline
-  suppressions in v2.1. A bare `nosec`, text such as `nosecurity`, or a secret containing `NOSEC`
-  cannot suppress a finding.
-- **Configuration-file coverage:** standard `.env` files, unquoted dotenv assignments, and common
-  quoted-key JSON credentials are included in credential triage.
-- **Stable report locations:** recursive results and SARIF artifact URIs use forward-slash,
-  repository-relative paths instead of host-specific absolute paths.
-- **Clean output streams:** the selected report is written only to stdout or `--output`; progress,
-  diagnostics, and write confirmations go to stderr. `--verbose` therefore cannot corrupt JSON or
-  SARIF on stdout.
-- **Regression CI:** pytest fixtures and the built-in pattern self-test run on Linux and Windows
-  across the supported Python matrix in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
-
-## What it detects
-
-| Category | Severity | Flag | Examples |
-|---|---:|---|---|
-| Credentials | HIGH | `-c` | passwords, API keys, tokens, AWS keys, JWTs, private-key headers, JDBC credentials |
-| SQL injection | HIGH | `--sqli` | concatenated or formatted SQL and unsafe statement construction |
-| Command injection | HIGH | `--cmd` | command/evaluation sinks with variable input, `shell=True`, `Runtime.exec` |
-| Deserialization | HIGH | `--deser` | pickle, unsafe YAML load, PHP `unserialize`, Java/Ruby object loading |
-| Weak crypto | MEDIUM | `--crypto` | MD5, SHA-1, DES, ECB mode, non-cryptographic PRNG use |
-| Path traversal | MEDIUM | `--path` | dynamically constructed file paths, dynamic include/read, traversal sequences |
-| Database operations | LOW | `--db` | database connections, file read/write SQL, MongoDB operators |
-| Interesting files | INFO | `--interesting` | configuration/backup references, debug flags, development markers |
-
-Rule IDs are part of the v2.1 output contract. Examples include
-`CREDENTIALS.PASSWORD`, `CREDENTIALS.API_KEY`, `CREDENTIALS.JWT`, `SQL.FORMAT`,
-`CMD.SUBPROCESS_SHELL`, and `DESER.YAML_LOAD`.
-
-The scanner covers common source and configuration extensions (Python, Java, PHP, JavaScript,
-TypeScript, C#, Go, Ruby, shell, XML, YAML, JSON, SQL, `.env`, `.properties`, and others) plus
-well-known files such as `Dockerfile`, `web.config`, and `pom.xml`.
-
-## Usage
-
-Download `vulnscan.py` and run it directly with Python. `colorama` is optional and only provides
-coloured terminal output.
+No installation, account, network access, or real secret is needed after cloning the repository:
 
 ```bash
-# Optional colour support
-python -m pip install -r requirements.txt
+git clone https://github.com/Zhaoyi-Fan/source-code-security-scanner.git
+cd source-code-security-scanner
+python vulnscan.py examples/demo_vulnerable.py --fail-on high
+```
 
-# Recursive scan, all categories
-python vulnscan.py -r ./target-source/
+Expected output (paths and columns may vary slightly by platform):
 
-# Selected categories
-python vulnscan.py -r --sqli --cmd ./target-source/
-python vulnscan.py -r -c --min-entropy 3.0 ./src/
+```text
+[HIGH]    L11:1 CREDENTIALS.PASSWORD - Hardcoded password (entropy 4.32, high)
+          [REDACTED]
+[HIGH]    L13:10 SQL.CONCAT - SQL built by string concatenation (medium)
+          query = "SELECT * FROM users WHERE id=" + user_id
+[HIGH]    L14:1 CMD.SUBPROCESS_SHELL - Python subprocess with shell=True (high)
+          subprocess.run("account-tool --id " + user_id, shell=True)
+[HIGH]    L15:11 DESER.PICKLE - Python pickle deserialization (medium)
+          profile = pickle.loads(input("Serialized profile: ").encode())
+[MEDIUM]  L16:18 CRYPTO.MD5 - Weak hash: MD5 (medium)
+          digest = hashlib.md5(b"synthetic-demo").hexdigest()
 
-# Single file
-python vulnscan.py -f path/to/File.java
+SUMMARY: 5 finding(s) | HIGH 4  MEDIUM 1  LOW 0  INFO 0  ERRORS 0  SUPPRESSED 0
+```
 
-# Machine-readable reports and a CI gate
-python vulnscan.py -r ./src/ --format sarif -o out.sarif
-python vulnscan.py -r ./src/ --format json -o out.json
-python vulnscan.py -r ./src/ --fail-on high
+Exit `1` is expected because the demo deliberately asks the scanner to fail on high-severity
+findings. The file contains only fictional synthetic values. On Windows, use `py` in place of
+`python` if that is how Python is registered.
 
-# Rule information and a lightweight built-in self-test
+## Why use it
+
+- **Fast local first pass:** run a single file offline with Python 3.10+ and no required package.
+- **Reviewable findings:** stable rule IDs, severity, confidence, CWE metadata, source locations,
+  and repository-relative paths.
+- **Safer reports:** candidate credential lines are redacted by default in text, JSON, and SARIF.
+- **CI-aware behavior:** distinct clean, finding-gate, and incomplete-scan exit codes; diagnostics
+  do not corrupt machine-readable stdout.
+- **Bounded operation:** containment checks, no-clobber output, input/report limits, and visible
+  incomplete-result diagnostics.
+- **Measured changes:** a positive/negative rule corpus makes supported behavior and regressions
+  inspectable instead of relying only on a rule count.
+
+## Install or keep the single file
+
+Direct execution remains the simplest offline path:
+
+```bash
+python vulnscan.py --version
+python vulnscan.py -r ./src
+```
+
+For a standard command-line installation from a reviewed checkout:
+
+```bash
+python -m pip install .
+vulnscan --version
+vulnscan -r ./src
+```
+
+Optional terminal colours are the only runtime extra:
+
+```bash
+python -m pip install ".[color]"
+```
+
+Installing the package and downloading the standalone `vulnscan.py` are two interfaces to the
+same module. The scanner never uploads target code.
+
+## Common workflows
+
+```bash
+# Scan all enabled categories recursively
+python vulnscan.py -r ./target-source
+
+# Narrow triage to SQL and command injection candidates
+python vulnscan.py -r --sqli --cmd ./target-source
+
+# Review credential candidates at medium confidence or higher
+python vulnscan.py -r -c --min-confidence medium ./src
+
+# Machine-readable reports
+python vulnscan.py -r ./src --format json -o vulnscan.json
+python vulnscan.py -r ./src --format sarif -o vulnscan.sarif
+
+# CI gate: exit 1 for a medium/high finding
+python vulnscan.py -r ./src --fail-on medium
+
+# Governance gate: require reasons and fail if any accepted suppression remains
+python vulnscan.py -r ./src --require-suppression-reason --fail-on-suppressed
+
+# Discover rule IDs and run the built-in smoke test
 python vulnscan.py --show-categories
 python vulnscan.py --test-patterns
 ```
 
-`--min-entropy` filters credential candidates below the chosen entropy value. It is a noise-control
-option, not a change to rule severity. Avoid `--no-redact` in CI or any report that may be retained
-or shared.
+Run `python vulnscan.py --help` for include/exclude globs, confidence and entropy filters, base
+paths, resource limits, and output options.
 
-### Rule-scoped Python suppression
+## Detection scope
 
-A suppression must be in a Python comment and list the stable ID of the rule being suppressed:
+| Category | Default severity | Flag | Typical candidates |
+|---|---:|---|---|
+| Credentials | HIGH | `-c` | passwords, API keys, tokens, private-key headers, connection strings |
+| SQL injection | HIGH | `--sqli` | concatenated/formatted SQL and unsafe statement construction |
+| Command injection | HIGH | `--cmd` | shell/evaluation sinks with dynamic input |
+| Deserialization | HIGH | `--deser` | pickle, unsafe YAML load, and common object-loading APIs |
+| Weak crypto | MEDIUM | `--crypto` | MD5, SHA-1, DES, ECB mode, and non-cryptographic PRNG use |
+| Path traversal | MEDIUM | `--path` | dynamic file paths, include/read patterns, and traversal sequences |
+| Database operations | LOW | `--db` | connection, file-backed SQL, and MongoDB operator patterns |
+| Interesting files | INFO | `--interesting` | configuration, backup, debug, and development markers |
+
+The scanner covers common Python, Java, PHP, JavaScript/TypeScript, C#, Go, Ruby, shell, XML,
+YAML, JSON, SQL, dotenv, and configuration files. Most rules inspect local text patterns. Limited
+Python AST/token checks improve selected syntax-sensitive rules, but there is no general parser,
+interprocedural analysis, value flow, reachability model, or sanitizer model.
+
+Inspect the exact enabled catalog with `--show-categories`. Stable IDs such as
+`CREDENTIALS.PASSWORD`, `SQL.CONCAT`, and `CMD.SUBPROCESS_SHELL` are shared by reports,
+benchmarks, and suppressions.
+
+## Review a result
+
+Use this sequence for each candidate:
+
+1. Confirm the matched API or value and whether the file is production-relevant.
+2. Trace whether attacker-controlled data can reach it and what validation occurs first.
+3. Check framework behavior, permissions, deployment context, and compensating controls.
+4. Record the result as confirmed, not exploitable, accepted risk, or needing deeper review.
+5. Fix the root cause or add a narrow, reviewable suppression only when justified.
+
+For Python, an inline suppression must be a real comment naming an exact rule ID:
 
 ```python
-password = get_test_fixture()  # nosec: CREDENTIALS.PASSWORD
+password = load_test_fixture()  # nosec: CREDENTIALS.PASSWORD -- synthetic test fixture
 ```
 
-Use the actual ID shown by a finding or `--show-categories`. A suppression applies only to the
-named rule on that line; it does not hide unrelated findings. Suppressions should carry a reviewable
-reason in the surrounding code or change record. v2.1 deliberately disables inline suppression
-for other languages because a regex cannot reliably distinguish comments from constructs such as
-JavaScript regex literals.
+Other languages intentionally do not support inline suppressions because regex alone cannot
+reliably identify every comment form. v2.2 reports audit suppression behavior; treat suppressions
+as governed exceptions, not invisible removals.
 
-## Output and exit-code contract
+JSON exposes redacted accepted items in `suppressions`, and SARIF emits standard `inSource` /
+`accepted` suppression metadata. Unknown IDs and directives that match no active finding are
+warnings. `--require-suppression-reason` rejects an unreasoned matching directive; use
+`--fail-on-suppressed` when policy requires the CI job to fail even for accepted exceptions.
 
-- Without `--output`, the selected text/JSON/SARIF report goes to stdout.
-- With `--output`, that same format is written to a new named file. Existing paths are never
-  overwritten; choose a fresh path or remove an obsolete report explicitly.
-- Progress and diagnostics go to stderr, including in `--verbose` mode.
-- Completed JSON and SARIF reports remain machine-parseable, including in `--verbose` mode.
-- A JSON report from a partial scan records `summary.scan_errors` and structured top-level
-  `diagnostics` while the process exits `2`.
+See [Accuracy and assurance](docs/accuracy-and-assurance.md) for the evidence model, known false
+positive/negative sources, and benchmark reporting requirements. See the [Threat model](docs/threat-model.md)
+for trust boundaries and residual risks.
+
+## Output and exit contract
+
+- Without `--output`, the selected report is written to stdout.
+- With `--output`, a new report file is created; an existing path is never overwritten.
+- Progress and diagnostics go to stderr, so JSON and SARIF on stdout remain parseable.
+- Default credential redaction protects the complete matched source line. Avoid `--no-redact` in
+  CI, retained reports, shared terminals, and issue attachments.
+- JSON reports carry a top-level `schema_version`; v2.2 consumers can validate against
+  [`schemas/vulnscan-2.2.schema.json`](schemas/vulnscan-2.2.schema.json).
+- When a read error, containment failure, write failure, or resource limit makes a scan
+  incomplete, the result records diagnostics and exits `2` by default.
+- Default limits are 10 MiB per file, 100,000 eligible files, 1 GiB total input, and 50,000
+  findings. Tune `--max-file-size`, `--max-files`, `--max-total-bytes`, or `--max-findings`;
+  setting one to `0` disables that specific limit. JSON and SARIF record completeness and
+  truncation, so a partial scan cannot look clean.
 
 | Exit | Meaning |
 |---:|---|
-| `0` | Scan completed and no configured gate threshold was reached |
-| `1` | Scan completed, and `--fail-on` found at least one result at or above the threshold |
-| `2` | Usage, target, scan/read, containment, or report-write error; results are incomplete |
+| `0` | Scan completed and the configured finding threshold was not reached |
+| `1` | Scan completed and `--fail-on` found one or more results at/above the threshold |
+| `2` | Usage, input, scan/read, containment, limit, or report-write error; do not treat as clean |
 
-Exit `2` takes precedence over a finding gate so CI cannot treat a partial scan as authoritative.
-`--best-effort` deliberately relaxes that strict default: scan diagnostics are still reported, but
-operational scan errors no longer force exit `2`. Use it only for exploratory local triage, never
-for an authoritative CI result or security gate.
+`--fail-on-suppressed` also uses exit `1` when the scan otherwise completes but contains an
+accepted suppression.
 
-## CI examples
+`--best-effort` is useful for exploratory local triage but intentionally relaxes the strict scan
+error exit. Do not use it for an authoritative security gate.
 
-### GitHub Actions with optional SARIF upload
+## Trusted CI use
 
-This example preserves the scanner's pass/fail outcome while giving the upload step a chance to
-run. The SARIF upload requires GitHub code scanning to be available for the repository and the
-workflow to have the shown permission; producing SARIF does not turn this regex triage tool into a
-full SAST engine.
+A pull request can weaken `vulnscan.py` if the gate uses the scanner copy from that same pull
+request. For a meaningful boundary, pin a reviewed scanner commit in a separate checkout (or a
+centrally controlled workflow), grant read-only permissions, and scan the untrusted source without
+building, importing, or executing it.
 
 ```yaml
-name: Security triage
+name: Source security triage
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   scan:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - name: Check out source under review
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: source
+          persist-credentials: false
+
+      - name: Check out reviewed scanner
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Zhaoyi-Fan/source-code-security-scanner
+          ref: "<FULL_40_CHARACTER_REVIEWED_COMMIT>"
+          path: scanner
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
 
-      - name: Run source triage
-        id: scanner
-        continue-on-error: true
-        run: python vulnscan.py -r . --format sarif -o vulnscan.sarif --fail-on high
-
-      - name: Upload SARIF when a report exists
-        if: always() && hashFiles('vulnscan.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: vulnscan.sarif
-
-      - name: Enforce scanner result
-        if: steps.scanner.outcome == 'failure'
-        run: exit 1
+      - name: Scan without executing target code
+        run: >-
+          python scanner/vulnscan.py -r source --base-dir source
+          --format sarif -o vulnscan.sarif --fail-on high
 ```
 
-### GitLab CI with report retention on failure
+Replace the placeholder with an immutable commit you reviewed; do not copy an unknown SHA from
+documentation. Protect changes to the consuming workflow and make exit `2` a failed check. SARIF
+upload is optional and requires the appropriate platform permission; report portability does not
+increase detector accuracy. The [threat model](docs/threat-model.md#ci-trust-boundary) explains
+what this does and does not protect.
 
-`artifacts: when: always` keeps the SARIF file when `--fail-on` returns `1`. GitLab versions that
-support a native SARIF report declaration can add it alongside the portable artifact path.
-
-```yaml
-sast_triage:
-  image: python:3.14-slim
-  script:
-    - python vulnscan.py -r . --format sarif -o vulnscan.sarif --fail-on high
-  artifacts:
-    when: always
-    paths:
-      - vulnscan.sarif
-```
-
-## Development
-
-The production scanner remains a directly runnable single file. Development dependencies are kept
-separate:
+## Development and verification
 
 ```bash
-python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m pip install -e ".[dev,color]"
 python -m pytest -q
 python vulnscan.py --test-patterns
+python scripts/evaluate_corpus.py
+python -m build
 ```
 
-The repository CI runs both checks on Ubuntu and Windows with Python 3.10 and 3.14.
+For integrations, the module also exposes a side-effect-free scan boundary. `scan()` reads source
+but does not print or write reports; the caller owns presentation and persistence:
 
-## Known limitations
+```python
+from vulnscan import ScanConfig, scan
 
-- Most rules inspect text patterns. Limited standard-library Python tokenization/AST checks protect
-  suppressions and validate `shell=True`/safe YAML-loader syntax; a token fallback keeps these two
-  rules consistent when the target uses newer Python syntax. There is no general multi-language
-  parser, value flow, reachability, or sanitizer/parameterization model.
-- A match is a review candidate, not proof of exploitability. False positives and false negatives
-  are expected, and rule severity is a triage priority rather than a CVSS score.
-- Minified/generated files, uncommon encodings, novel secret formats, and code outside supported
-  file types may need separate review or explicit tooling.
-- SARIF provides interoperable locations and metadata, but accuracy still depends on the underlying
-  regex rule and human validation.
-- This project intentionally does not include a dashboard, cloud service, custom AST/taint engine,
-  IDE extension, or unrelated SCA/DAST/container/IaC features. Its scope is auditable source-review
-  triage.
+result = scan(ScanConfig(target="src", recursive=True))
+for finding in result.findings:
+    print(finding.rule_id, finding.file, finding.line)
+assert result.stats.complete, "do not treat an incomplete scan as clean"
+```
 
-## Why I built it
+`ScanResult` separates findings, accepted suppressions, diagnostics, and `ScanStats`. The CLI is a
+thin adapter over this boundary, while the downloadable single-file workflow remains intact.
 
-During an **authorized source-code review** in an application-security assessment, I needed a fast
-way to triage a codebase for embedded credentials and potentially injectable sinks. Generic `grep`
-was too noisy, so I built a category-based scanner and then adapted it to a Secure SDLC workflow:
-stable rule IDs, safe reports, CI exit codes, scoped suppressions, and SARIF for review systems.
+The project CI also proves that the standalone scanner starts without third-party dependencies,
+then builds a wheel, installs it, and exercises the `vulnscan` console command. Rule changes should
+add exact positive and near-miss negative corpus cases. The v2.2 snapshot contains 52 stable rules
+and 104 exact-result cases—one positive and one nearby negative for every rule. That is a
+regression baseline, not an external accuracy claim; the assurance guide explains the distinction.
 
-The intended workflow remains pattern-driven triage followed by manual confirmation and the
-language-aware security tools appropriate to the application.
+Release history and compatibility notes live in [CHANGELOG.md](CHANGELOG.md). Security issues
+should follow [SECURITY.md](SECURITY.md).
+
+## Project rationale
+
+I built the original scanner during an authorized application-security source review where broad
+text search was useful but too noisy. The project evolved around the engineering boundaries that
+matter in a Secure SDLC: stable identifiers, safe retained output, explicit failure semantics,
+auditable exceptions, interoperable reports, and measurable regression evidence.
+
+The intended workflow remains deliberately simple:
+
+```text
+fast offline triage -> human confirmation -> language-aware tooling or remediation
+```
+
+This repository does not aim to become a cloud platform, dependency scanner, DAST engine, or
+custom multi-language taint engine.
 
 ## Responsible use
 
-Use this scanner only for source code and systems you own or are explicitly authorized to assess.
-Keep default redaction enabled for retained or shared reports, and treat every result as a review
-candidate requiring human validation.
+Use the scanner only on source code you own or are explicitly authorized to assess. Never paste
+real secrets into public reproductions. A match should lead to careful validation, not an
+unverified vulnerability claim.
 
 ## License
 
