@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Zhaoyi-Fan/source-code-security-scanner/blob/main/schemas/vulnscan-2.2.schema.json",
+  "title": "Source Code Security Scanner JSON report v2.2",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "tool",
+    "version",
+    "summary",
+    "diagnostics",
+    "findings",
+    "suppressions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2.2"
+    },
+    "tool": {
+      "const": "source-code-security-scanner"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "$ref": "#/$defs/summary"
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "suppressions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/suppression"
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "required": [
+        "total",
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        "INFO",
+        "scan_errors",
+        "suppressed",
+        "filtered",
+        "files_considered",
+        "files_scanned",
+        "bytes_scanned",
+        "skipped_binary",
+        "skipped_links",
+        "complete",
+        "truncated"
+      ],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "HIGH": { "type": "integer", "minimum": 0 },
+        "MEDIUM": { "type": "integer", "minimum": 0 },
+        "LOW": { "type": "integer", "minimum": 0 },
+        "INFO": { "type": "integer", "minimum": 0 },
+        "scan_errors": { "type": "integer", "minimum": 0 },
+        "suppressed": { "type": "integer", "minimum": 0 },
+        "filtered": { "type": "integer", "minimum": 0 },
+        "files_considered": { "type": "integer", "minimum": 0 },
+        "files_scanned": { "type": "integer", "minimum": 0 },
+        "bytes_scanned": { "type": "integer", "minimum": 0 },
+        "skipped_binary": { "type": "integer", "minimum": 0 },
+        "skipped_links": { "type": "integer", "minimum": 0 },
+        "complete": { "type": "boolean" },
+        "truncated": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": ["level", "message", "file"],
+      "properties": {
+        "level": { "enum": ["warning", "error"] },
+        "message": { "type": "string" },
+        "file": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "finding": {
+      "type": "object",
+      "required": [
+        "rule_id",
+        "category",
+        "severity",
+        "description",
+        "file",
+        "line",
+        "column",
+        "end_line",
+        "end_column",
+        "match",
+        "context",
+        "confidence",
+        "entropy",
+        "cwe"
+      ],
+      "properties": {
+        "rule_id": { "type": "string", "minLength": 1 },
+        "category": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["HIGH", "MEDIUM", "LOW", "INFO"] },
+        "description": { "type": "string" },
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "end_column": { "type": "integer", "minimum": 1 },
+        "match": { "type": "string" },
+        "context": { "type": "string" },
+        "confidence": { "enum": ["low", "medium", "high"] },
+        "entropy": { "type": "number", "minimum": 0 },
+        "cwe": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "suppression": {
+      "type": "object",
+      "required": [
+        "rule_id",
+        "category",
+        "severity",
+        "description",
+        "file",
+        "line",
+        "column",
+        "end_line",
+        "end_column",
+        "match",
+        "context",
+        "confidence",
+        "entropy",
+        "cwe",
+        "justification"
+      ],
+      "properties": {
+        "rule_id": { "type": "string", "minLength": 1 },
+        "category": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["HIGH", "MEDIUM", "LOW", "INFO"] },
+        "description": { "type": "string" },
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "end_column": { "type": "integer", "minimum": 1 },
+        "match": { "type": "string" },
+        "context": { "type": "string" },
+        "confidence": { "enum": ["low", "medium", "high"] },
+        "entropy": { "type": "number", "minimum": 0 },
+        "cwe": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "null" }
+          ]
+        },
+        "justification": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
